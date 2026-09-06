@@ -1,0 +1,8 @@
+{
+  "segments": {
+    "agentHeartbeats": {
+      "enabled": false,
+      "dir": "~/.claude/agent-status"
+    }
+  }
+}

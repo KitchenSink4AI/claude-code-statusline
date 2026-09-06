@@ -61,6 +61,24 @@ const CRITICAL_FRACTION = 0.955; // ~926k of the 970k wall (~80k below the ~1,00
 // this path (they have positive deltas), so their tuned envelope estimate is untouched.
 const FLAT_RATE_FLOOR = 1000;
 
+// --- Agent heartbeat segment ---
+// Orchestrated background agents write one tiny JSON per agent into a status dir
+// (~/.claude/agent-status by default). The segment is OFF unless the config file
+// enables it, and it renders NOTHING unless at least one agent is running, so a
+// machine that never runs agents never sees it.
+//
+// STALENESS IS MEASURED FROM FILE MTIME, NEVER THE JSON'S OWN `updated` FIELD.
+// Agents have been observed stamping estimated (even future) timestamps into
+// `updated`; the filesystem mtime cannot be mis-stamped by the writer. The JSON is
+// parsed ONLY for `status`.
+const AGENT_QUIET_SEC = 5 * 60;   // >= this, the segment goes yellow
+const AGENT_STALE_SEC = 15 * 60;  // >= this, red ("no update", which is not the same as "no progress")
+// A blocked agent is news while it is recent and clutter once it is history: nobody
+// prunes these files, so a week-old `blocked` would otherwise pin the marker on forever.
+const AGENT_BLOCKED_WINDOW_SEC = 60 * 60;
+// Guard against a pathological status dir; the segment must stay ~free to render.
+const AGENT_MAX_FILES = 200;
+
 // --- Helpers ---
 
 function formatTokens(num) {
@@ -155,6 +173,22 @@ function getGitBranch(dir) {
 function readJsonFile(filePath) {
   try { return JSON.parse(fs.readFileSync(filePath, 'utf8')); }
   catch { return null; }
+}
+
+function expandHome(p) {
+  if (typeof p !== 'string' || !p) return '';
+  if (p === '~') return os.homedir();
+  if (p.startsWith('~/') || p.startsWith('~\\')) return path.join(os.homedir(), p.slice(2));
+  return p;
+}
+
+function readStatuslineConfig() {
+  // Optional user config at ~/.claude/statusline-config.json. Absent or malformed =
+  // {} = every default, so the status line never depends on it existing.
+  // CLAUDE_STATUSLINE_CONFIG points somewhere else, which is how a config can be
+  // trialed on one window without editing the global one.
+  const custom = expandHome(process.env.CLAUDE_STATUSLINE_CONFIG || '');
+  return readJsonFile(custom || path.join(os.homedir(), '.claude', 'statusline-config.json')) || {};
 }
 
 function writeJsonFileAtomic(filePath, data) {
@@ -581,6 +615,84 @@ function computeSessionAgents(transcriptPath, sid) {
   return out;
 }
 
+// --- Agent heartbeat collection ---
+
+function collectAgentHeartbeats(dir, nowMs) {
+  // Returns { running, blocked, quietestSec } from the heartbeat files in `dir`.
+  //   running     = files whose status is "running" (completed/killed/blocked never count)
+  //   blocked     = recent files whose status is "blocked" (own marker, not part of the count)
+  //   quietestSec = the LARGEST mtime age among the counted running agents, i.e. how long
+  //                 the quietest one has gone without touching its file.
+  // A missing/unreadable dir returns zeros, which renders as nothing at all — a status
+  // dir that was never created is the normal case, not an error.
+  const out = { running: 0, blocked: 0, quietestSec: 0 };
+  let entries;
+  try { entries = fs.readdirSync(dir); } catch { return out; }
+
+  let seen = 0;
+  for (const f of entries) {
+    if (!f.endsWith('.json')) continue;
+    if (++seen > AGENT_MAX_FILES) break;
+    const fp = path.join(dir, f);
+    let st;
+    try { st = fs.statSync(fp); } catch { continue; }
+    const ageSec = Math.max(0, (nowMs - st.mtimeMs) / 1000);
+
+    let status = null;
+    try {
+      const obj = JSON.parse(fs.readFileSync(fp, 'utf8'));
+      if (obj && typeof obj.status === 'string') status = obj.status.trim().toLowerCase();
+    } catch { /* unreadable or half-written; handled below */ }
+
+    if (status === null) {
+      // Malformed, truncated, or mid-write. A FRESH one is almost always an agent
+      // caught between the write and the rename, so count it as a running agent of
+      // unknown status; a stale one is debris and is ignored entirely.
+      if (ageSec < AGENT_QUIET_SEC) {
+        out.running++;
+        if (ageSec > out.quietestSec) out.quietestSec = ageSec;
+      }
+      continue;
+    }
+
+    if (status === 'running') {
+      out.running++;
+      if (ageSec > out.quietestSec) out.quietestSec = ageSec;
+    } else if (status === 'blocked' && ageSec < AGENT_BLOCKED_WINDOW_SEC) {
+      out.blocked++;
+    }
+  }
+  return out;
+}
+
+function formatAgentAge(sec) {
+  if (sec < 60) return `${Math.floor(sec)}s`;
+  if (sec < 3600) return `${Math.floor(sec / 60)}m`;
+  return `${Math.floor(sec / 3600)}h`;
+}
+
+function renderAgentSegment(state) {
+  // "⚙3·2m" = 3 running, quietest heartbeat 2 minutes old.
+  // "⚙2·5m·1⛔" adds a blocked agent. Empty string = draw nothing.
+  if (!state || state.running <= 0) return '';
+  const q = state.quietestSec;
+  const color = q >= AGENT_STALE_SEC ? C.red : q >= AGENT_QUIET_SEC ? C.yellow : C.green;
+  let out = `${color}⚙${state.running}·${formatAgentAge(q)}${C.reset}`;
+  if (state.blocked > 0) out += `${C.red}·${state.blocked}⛔${C.reset}`;
+  return out;
+}
+
+function agentHeartbeatSegment(config, nowMs) {
+  // Config gate + path resolution. Fully guarded: a heartbeat file must never be able
+  // to take the status line down, so any failure here renders as an absent segment.
+  try {
+    const cfg = config?.segments?.agentHeartbeats;
+    if (!cfg || cfg.enabled !== true) return '';
+    const dir = expandHome(cfg.dir) || path.join(os.homedir(), '.claude', 'agent-status');
+    return renderAgentSegment(collectAgentHeartbeats(dir, nowMs));
+  } catch { return ''; }
+}
+
 // --- Main ---
 
 async function main() {
@@ -963,6 +1075,11 @@ async function main() {
     const agtStr = `${C.white}agents:${C.reset} ${C.cyan}${formatTokens(sessionAgents.agentsNew)}${C.reset}`
       + `${sep}${C.white}spawned:${C.reset} ${C.cyan}${sessionAgents.agentCount}${C.reset}`;
     line2 = line2 ? line2 + sep + agtStr : agtStr;
+
+    // Live agent heartbeats, next to the token counters they belong with. Off by
+    // default; empty (and therefore invisible) whenever nothing is running.
+    const hbStr = agentHeartbeatSegment(readStatuslineConfig(), Date.now());
+    if (hbStr) line2 += sep + hbStr;
   }
 
   // LINE 3: per-session "compute" (full throughput incl. cache re-reads) then the
@@ -1002,4 +1119,20 @@ async function main() {
   if (line3) process.stdout.write('\n' + line3);
 }
 
-main().catch(() => process.stdout.write('Claude'));
+// Exported for the test suite. `require.main` is only this file when the CLI runs it,
+// so requiring the module for tests never renders a status line.
+module.exports = {
+  collectAgentHeartbeats,
+  renderAgentSegment,
+  formatAgentAge,
+  agentHeartbeatSegment,
+  expandHome,
+  AGENT_QUIET_SEC,
+  AGENT_STALE_SEC,
+  AGENT_BLOCKED_WINDOW_SEC,
+  AGENT_MAX_FILES,
+};
+
+if (require.main === module) {
+  main().catch(() => process.stdout.write('Claude'));
+}
