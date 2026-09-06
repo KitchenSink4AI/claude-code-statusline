@@ -36,6 +36,26 @@ resets 3:30pm | resets aug 29, 11:00am | compute: 18.7m | lifetime: 4,329,604,81
 - **Model self-check** — writes a tiny JSON snapshot per session so the model can run `node ~/.claude/context-status.js` and get its own real context budget instead of guessing.
 - **Token diagnostic logger** — opt-in per-turn JSONL logger for calibrating the envelope follower across sessions.
 
+### Agent heartbeats
+
+When Claude Code orchestrates background agents that write status files to `~/.claude/agent-status/` (one small JSON per agent), the status line can show a compact segment: how many are running, and how quiet the quietest one has gone — measured from file modification time, not self-reported timestamps, so an agent that mis-stamps its own clock cannot fool it. Green under five minutes, yellow to fifteen, red past that; a blocked agent gets its own marker. No agents running, no segment. Off by default; enable it in the segment config.
+
+```
+5hr: ●●●●●●●○○○ 72% | weekly: ●●●○○○○○○○ 31% | session: 4.2m | agents: 156k | spawned: 8 | ⚙3·2m
+```
+
+```json
+// ~/.claude/statusline-config.json
+{
+  "segments": {
+    "agentHeartbeats": {
+      "enabled": true,
+      "dir": "~/.claude/agent-status"
+    }
+  }
+}
+```
+
 ## Installation
 
 ### 1. Copy the files
