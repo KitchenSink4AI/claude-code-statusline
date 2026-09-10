@@ -151,3 +151,7 @@ CONTEXT STATUS  (snapshot 2s old)
 ## License
 
 MIT with Non-Commercial Clause — free to use, modify, and share for non-commercial purposes. Commercial use requires written permission from the author. See [LICENSE](LICENSE).
+
+## Trademarks
+
+claude-code-statusline is an independent community tool for use with Claude Code. It is not affiliated with, endorsed by, or sponsored by Anthropic. Claude and Claude Code are trademarks of Anthropic, PBC.
