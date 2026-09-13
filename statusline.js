@@ -995,13 +995,24 @@ async function main() {
     const ageFrac = cacheTtl > 0 ? cacheAgeSec / cacheTtl : 0;
     let cacheStr;
 
+    const is5m = cacheTtl < 3600;
+    // Flash the TTL label when on 5m TTL — you've been downgraded to overage cache.
+    const ttlStr = is5m
+      ? `${(frame % 2 === 0) ? C.red : C.yellow}5m TTL${C.reset}`
+      : '';
+
     if (ageFrac >= 1.0) {
       const flashColor = (frame % 2 === 0) ? C.red : C.yellow;
       cacheStr = `${C.white}cache:${C.reset} ${flashColor}COLD${C.reset}`;
+      if (ttlStr) cacheStr += ` ${ttlStr}`;
     } else {
-      const remainMin = Math.max(0, Math.ceil((cacheTtl - cacheAgeSec) / 60));
+      const remainSec = Math.max(0, cacheTtl - cacheAgeSec);
+      const remainMin = Math.ceil(remainSec / 60);
+      // Countdown color: flash red/yellow under 10 min, red under 15%, yellow under 33%, else green.
       let cacheColor = C.green;
-      if (ageFrac >= 0.85) {
+      if (remainSec <= 600) {
+        cacheColor = (frame % 2 === 0) ? C.red : C.yellow;
+      } else if (ageFrac >= 0.85) {
         cacheColor = C.red;
       } else if (ageFrac >= 0.67) {
         cacheColor = C.yellow;
@@ -1015,6 +1026,7 @@ async function main() {
         hitStr = `${hitColor}${cacheHitPct}%${C.reset}`;
       }
       cacheStr = `${C.white}cache:${C.reset} ${hitStr} ${cacheColor}${remainMin}m left${C.reset}`;
+      if (ttlStr) cacheStr += ` ${ttlStr}`;
     }
     line2 = line2 ? line2 + sep + cacheStr : cacheStr;
   }
