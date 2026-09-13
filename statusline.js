@@ -1008,8 +1008,7 @@ async function main() {
     } else {
       const remainSec = Math.max(0, cacheTtl - cacheAgeSec);
       const remainMin = Math.ceil(remainSec / 60);
-      // Countdown color: flash red/yellow under 10 min, red under 15%, yellow under 33%, else green.
-      let cacheColor = C.green;
+      let cacheColor = C.grey;
       if (remainSec <= 600) {
         cacheColor = (frame % 2 === 0) ? C.red : C.yellow;
       } else if (ageFrac >= 0.85) {
