@@ -1008,7 +1008,7 @@ async function main() {
     } else {
       const remainSec = Math.max(0, cacheTtl - cacheAgeSec);
       const remainMin = Math.ceil(remainSec / 60);
-      let cacheColor = C.grey;
+      let cacheColor = C.cyan;
       if (remainSec <= 600) {
         cacheColor = (frame % 2 === 0) ? C.red : C.yellow;
       } else if (ageFrac >= 0.85) {
