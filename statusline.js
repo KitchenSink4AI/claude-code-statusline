@@ -794,32 +794,36 @@ async function main() {
   // Cache age vs TTL tells you whether the NEXT turn will pay a re-cache penalty.
   if (turnCount > 0 && cacheAgeSec >= 0) {
     const ttlLabel = cacheTtl >= 3600 ? '1h' : '5m';
-    const ageMin = Math.floor(cacheAgeSec / 60);
     const ageFrac = cacheTtl > 0 ? cacheAgeSec / cacheTtl : 0;
 
-    let cacheColor = C.green;
-    let cacheWarn = '';
     if (ageFrac >= 1.0) {
-      cacheColor = C.red;
-      cacheWarn = ` ${C.red}COLD${C.reset}`;
-    } else if (ageFrac >= 0.85) {
-      cacheColor = C.red;
-      cacheWarn = ` ${C.yellow}expiring${C.reset}`;
-    } else if (ageFrac >= 0.67) {
-      cacheColor = C.yellow;
-    }
-
-    // Cache hit rate color: >=80% green (good discount), 40-79% yellow (partial),
-    // <40% flashing red/yellow (you're paying near full price — same flash as >90% bars).
-    let hitStr;
-    if (cacheHitPct < 40) {
+      // Cache expired — don't show a meaningless age counter (could be days old).
+      // Just show "COLD" in flashing red/yellow so it's immediately obvious.
       const flashColor = (frame % 2 === 0) ? C.red : C.yellow;
-      hitStr = `${flashColor}${cacheHitPct}%${C.reset}`;
+      line1 += `${sep}${C.white}cache:${C.reset} ${flashColor}COLD${C.reset}`;
     } else {
-      const hitColor = cacheHitPct >= 80 ? C.green : C.yellow;
-      hitStr = `${hitColor}${cacheHitPct}%${C.reset}`;
+      const ageMin = Math.floor(cacheAgeSec / 60);
+      let cacheColor = C.green;
+      let cacheWarn = '';
+      if (ageFrac >= 0.85) {
+        cacheColor = C.red;
+        cacheWarn = ` ${C.yellow}expiring${C.reset}`;
+      } else if (ageFrac >= 0.67) {
+        cacheColor = C.yellow;
+      }
+
+      // Cache hit rate color: >=80% green (good discount), 40-79% yellow (partial),
+      // <40% flashing red/yellow (you're paying near full price — same flash as >90% bars).
+      let hitStr;
+      if (cacheHitPct < 40) {
+        const flashColor = (frame % 2 === 0) ? C.red : C.yellow;
+        hitStr = `${flashColor}${cacheHitPct}%${C.reset}`;
+      } else {
+        const hitColor = cacheHitPct >= 80 ? C.green : C.yellow;
+        hitStr = `${hitColor}${cacheHitPct}%${C.reset}`;
+      }
+      line1 += `${sep}${C.white}cache:${C.reset} ${hitStr} ${cacheColor}${ageMin}m/${ttlLabel}${C.reset}${cacheWarn}`;
     }
-    line1 += `${sep}${C.white}cache:${C.reset} ${hitStr} ${cacheColor}${ageMin}m/${ttlLabel}${C.reset}${cacheWarn}`;
   }
 
   // ===== Alert level = more severe of two signals =====
