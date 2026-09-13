@@ -999,12 +999,10 @@ async function main() {
       const flashColor = (frame % 2 === 0) ? C.red : C.yellow;
       cacheStr = `${C.white}cache:${C.reset} ${flashColor}COLD${C.reset}`;
     } else {
-      const ageMin = Math.floor(cacheAgeSec / 60);
+      const remainMin = Math.max(0, Math.ceil((cacheTtl - cacheAgeSec) / 60));
       let cacheColor = C.green;
-      let cacheWarn = '';
       if (ageFrac >= 0.85) {
         cacheColor = C.red;
-        cacheWarn = ` ${C.yellow}expiring${C.reset}`;
       } else if (ageFrac >= 0.67) {
         cacheColor = C.yellow;
       }
@@ -1016,7 +1014,7 @@ async function main() {
         const hitColor = cacheHitPct >= 80 ? C.green : C.yellow;
         hitStr = `${hitColor}${cacheHitPct}%${C.reset}`;
       }
-      cacheStr = `${C.white}cache:${C.reset} ${hitStr} ${cacheColor}${ageMin}m/${ttlLabel}${C.reset}${cacheWarn}`;
+      cacheStr = `${C.white}cache:${C.reset} ${hitStr} ${cacheColor}${remainMin}m left${C.reset}`;
     }
     line2 = line2 ? line2 + sep + cacheStr : cacheStr;
   }
