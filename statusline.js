@@ -789,43 +789,6 @@ async function main() {
     line1 += `${sep}${C.white}turn:${C.reset} ${C.cyan}${turnCount}${C.reset}`;
   }
 
-  // Cache health: hit rate on the last turn + staleness relative to detected TTL.
-  // hitPct tells you how warm the cache is RIGHT NOW (95%=warm, <10%=cold start).
-  // Cache age vs TTL tells you whether the NEXT turn will pay a re-cache penalty.
-  if (turnCount > 0 && cacheAgeSec >= 0) {
-    const ttlLabel = cacheTtl >= 3600 ? '1h' : '5m';
-    const ageFrac = cacheTtl > 0 ? cacheAgeSec / cacheTtl : 0;
-
-    if (ageFrac >= 1.0) {
-      // Cache expired — don't show a meaningless age counter (could be days old).
-      // Just show "COLD" in flashing red/yellow so it's immediately obvious.
-      const flashColor = (frame % 2 === 0) ? C.red : C.yellow;
-      line1 += `${sep}${C.white}cache:${C.reset} ${flashColor}COLD${C.reset}`;
-    } else {
-      const ageMin = Math.floor(cacheAgeSec / 60);
-      let cacheColor = C.green;
-      let cacheWarn = '';
-      if (ageFrac >= 0.85) {
-        cacheColor = C.red;
-        cacheWarn = ` ${C.yellow}expiring${C.reset}`;
-      } else if (ageFrac >= 0.67) {
-        cacheColor = C.yellow;
-      }
-
-      // Cache hit rate color: >=80% green (good discount), 40-79% yellow (partial),
-      // <40% flashing red/yellow (you're paying near full price — same flash as >90% bars).
-      let hitStr;
-      if (cacheHitPct < 40) {
-        const flashColor = (frame % 2 === 0) ? C.red : C.yellow;
-        hitStr = `${flashColor}${cacheHitPct}%${C.reset}`;
-      } else {
-        const hitColor = cacheHitPct >= 80 ? C.green : C.yellow;
-        hitStr = `${hitColor}${cacheHitPct}%${C.reset}`;
-      }
-      line1 += `${sep}${C.white}cache:${C.reset} ${hitStr} ${cacheColor}${ageMin}m/${ttlLabel}${C.reset}${cacheWarn}`;
-    }
-  }
-
   // ===== Alert level = more severe of two signals =====
   // Token tiers: absolute position toward the hard wall (the lines the user set,
   // ~700k/740k/775k on 1M). Turns tiers: anti-blowout protection \u2014 if the burn
@@ -1024,6 +987,38 @@ async function main() {
 
     line3 = col1Reset + sep + col2Reset;
     if (col3Reset) line3 += sep + col3Reset;
+  }
+
+  // Cache health on LINE 2: hit rate + age/TTL or COLD.
+  if (turnCount > 0 && cacheAgeSec >= 0) {
+    const ttlLabel = cacheTtl >= 3600 ? '1h' : '5m';
+    const ageFrac = cacheTtl > 0 ? cacheAgeSec / cacheTtl : 0;
+    let cacheStr;
+
+    if (ageFrac >= 1.0) {
+      const flashColor = (frame % 2 === 0) ? C.red : C.yellow;
+      cacheStr = `${C.white}cache:${C.reset} ${flashColor}COLD${C.reset}`;
+    } else {
+      const ageMin = Math.floor(cacheAgeSec / 60);
+      let cacheColor = C.green;
+      let cacheWarn = '';
+      if (ageFrac >= 0.85) {
+        cacheColor = C.red;
+        cacheWarn = ` ${C.yellow}expiring${C.reset}`;
+      } else if (ageFrac >= 0.67) {
+        cacheColor = C.yellow;
+      }
+      let hitStr;
+      if (cacheHitPct < 40) {
+        const flashColor = (frame % 2 === 0) ? C.red : C.yellow;
+        hitStr = `${flashColor}${cacheHitPct}%${C.reset}`;
+      } else {
+        const hitColor = cacheHitPct >= 80 ? C.green : C.yellow;
+        hitStr = `${hitColor}${cacheHitPct}%${C.reset}`;
+      }
+      cacheStr = `${C.white}cache:${C.reset} ${hitStr} ${cacheColor}${ageMin}m/${ttlLabel}${C.reset}${cacheWarn}`;
+    }
+    line2 = line2 ? line2 + sep + cacheStr : cacheStr;
   }
 
   // LINE 3: session (new work) | compute (full throughput) | lifetime (high score)
