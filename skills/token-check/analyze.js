@@ -142,9 +142,9 @@ if (snap && snap.summary) {
 // the check is near-free even at the wall — the whole point is to never overflow a window
 // just by measuring a file. Mirrors CLAUDE.md "Memory Saving".
 (function memSafety() {
-  if (!sess) return;
-  const projectDir = path.dirname(sess.file);
-  const memDir = path.join(projectDir, 'memory');
+  const projDir = sess ? path.dirname(sess.file) : null;
+  const memDir = projDir ? path.join(projDir, 'memory') : null;
+  if (!memDir) return;
   let big = null;
   try {
     for (const fn of fs.readdirSync(memDir)) {
@@ -188,6 +188,30 @@ if (deltas.length >= 4) {
             : bm < am * 0.7 ? 'falling (recent turns lighter)'
             : 'steady';
   console.log(`\nTrend:   per-turn cost ${dir}.`);
+}
+
+// --- prompt cache health (from snapshot) ---
+if (snap && snap.cache_hit_pct != null) {
+  const ttl = (snap.cache_ttl || 3600);
+  const ttlLabel = ttl >= 3600 ? '1 hour' : '5 minutes';
+  const ageMin = Math.floor((snap.cache_age_sec || 0) / 60);
+  const ageSec = snap.cache_age_sec || 0;
+  const ageFrac = ttl > 0 ? ageSec / ttl : 0;
+  const expired = snap.cache_expired;
+
+  console.log(`\n=== PROMPT CACHE ===`);
+  console.log(`Hit rate:  ${snap.cache_hit_pct}% (last turn — higher = warm, lower = cold/expensive)`);
+  console.log(`TTL:       ${ttlLabel} (detected from cache_creation breakdown)`);
+  console.log(`Age:       ${ageMin}m since last API response (${Math.round(ageFrac * 100)}% of TTL elapsed)`);
+
+  if (expired) {
+    console.log(`\n*** CACHE EXPIRED ***`);
+    console.log('The prompt cache has expired. The next API call will RE-CACHE the entire context');
+    console.log('at 1.25-2x the normal input token cost. For a large context this can be significant.');
+    console.log('This is why resuming an old conversation costs more — every cached token is re-written.');
+  } else if (ageFrac >= 0.85) {
+    console.log(`\n* CACHE EXPIRING (${Math.round((ttl - ageSec) / 60)}m remaining) — activity refreshes it, but a long pause will cause a cold re-cache. *`);
+  }
 }
 
 // --- rate-limit awareness (from snapshot, refreshed every ~2.5 min via OAuth cache) ---

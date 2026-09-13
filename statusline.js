@@ -228,7 +228,7 @@ function isRealUserPrompt(obj) {
 }
 
 function parseTranscriptTurns(transcriptPath) {
-  // Returns { turns: [{ turn, total, model }], processed, processedNew }.
+  // Returns { turns, processed, processedNew, cache }.
   //  - turns: per-turn PEAK context totals (peak usage at the END of each user turn),
   //    used for delta/turns-remaining math. Includes the model id so model switches
   //    can be detected and their anomalous deltas excluded from the burn-rate estimate.
@@ -236,6 +236,11 @@ function parseTranscriptTurns(transcriptPath) {
   //    the main thread this session (cache re-reads counted each turn, so it far
   //    exceeds the live window). Computed here in the same pass so the large main
   //    transcript is read only ONCE per refresh; feeds the session-burn tracker.
+  //  - cache: { hitPct, lastTs, ttl } from the LAST assistant message with usage —
+  //    hitPct = % of input served from cache (high=warm, low=cold),
+  //    lastTs = unix-ms timestamp of that message (for cache-age computation),
+  //    ttl = detected TTL in seconds (3600 for 1h, 300 for 5m) from the
+  //    cache_creation sub-object's ephemeral_1h/5m breakdown.
   try {
     const content = fs.readFileSync(transcriptPath, 'utf8');
     const lines = content.split('\n');
@@ -245,6 +250,12 @@ function parseTranscriptTurns(transcriptPath) {
     let processedNew = 0; // new-work metric (excludes cache re-reads)
     const turnTotals = new Map();  // userTurn -> { total, model }
     let lastModel = '';
+
+    let lastCacheRead = 0;
+    let lastCacheCreate = 0;
+    let lastInput = 0;
+    let lastTs = 0;
+    let lastTtl = 3600;   // default 1h; overridden if the breakdown says 5m
 
     for (const line of lines) {
       if (!line.trim()) continue;
@@ -269,17 +280,35 @@ function parseTranscriptTurns(transcriptPath) {
         if (!prev || total > prev.total) {
           turnTotals.set(userTurn, { total, model: lastModel });
         }
+
+        lastCacheRead = u.cache_read_input_tokens || 0;
+        lastCacheCreate = u.cache_creation_input_tokens || 0;
+        lastInput = u.input_tokens || 0;
+        if (obj.timestamp) lastTs = new Date(obj.timestamp).getTime();
+
+        const cc = u.cache_creation;
+        if (cc) {
+          const h1 = cc.ephemeral_1h_input_tokens || 0;
+          const m5 = cc.ephemeral_5m_input_tokens || 0;
+          if (h1 + m5 > 0) lastTtl = h1 >= m5 ? 3600 : 300;
+        }
       }
     }
+
+    const inputTotal = lastCacheRead + lastCacheCreate + lastInput;
+    const hitPct = inputTotal > 0 ? Math.round(lastCacheRead * 100 / inputTotal) : 0;
 
     // Convert to sorted array
     const sorted = Array.from(turnTotals.entries())
       .sort((a, b) => a[0] - b[0])
       .map(([turn, entry]) => ({ turn, total: entry.total, model: entry.model }));
 
-    return { turns: sorted, processed, processedNew };
+    return {
+      turns: sorted, processed, processedNew,
+      cache: { hitPct, lastTs, ttl: lastTtl },
+    };
   } catch {
-    return { turns: [], processed: 0, processedNew: 0 };
+    return { turns: [], processed: 0, processedNew: 0, cache: { hitPct: 0, lastTs: 0, ttl: 3600 } };
   }
 }
 
@@ -661,12 +690,23 @@ async function main() {
   let hasData = false;
   let mainProcessed = 0; // main thread, total metric (cache-inclusive)
   let mainNew = 0;       // main thread, new-work metric (excludes cache re-reads)
+  let cacheHitPct = 0;   // last turn's cache hit rate (0-100)
+  let cacheAgeSec = 0;   // seconds since the last API response
+  let cacheTtl = 3600;   // detected TTL (3600=1h, 300=5m)
 
   if (transcriptPath) {
     const parsed = parseTranscriptTurns(transcriptPath);
     const turnTotals = parsed.turns;
     mainProcessed = parsed.processed;
     mainNew = parsed.processedNew;
+
+    if (parsed.cache) {
+      cacheHitPct = parsed.cache.hitPct;
+      cacheTtl = parsed.cache.ttl;
+      if (parsed.cache.lastTs > 0) {
+        cacheAgeSec = Math.max(0, Math.floor((Date.now() - parsed.cache.lastTs) / 1000));
+      }
+    }
     turnCount = turnTotals.length;
 
     if (turnTotals.length >= 2) {
@@ -749,6 +789,39 @@ async function main() {
     line1 += `${sep}${C.white}turn:${C.reset} ${C.cyan}${turnCount}${C.reset}`;
   }
 
+  // Cache health: hit rate on the last turn + staleness relative to detected TTL.
+  // hitPct tells you how warm the cache is RIGHT NOW (95%=warm, <10%=cold start).
+  // Cache age vs TTL tells you whether the NEXT turn will pay a re-cache penalty.
+  if (turnCount > 0 && cacheAgeSec >= 0) {
+    const ttlLabel = cacheTtl >= 3600 ? '1h' : '5m';
+    const ageMin = Math.floor(cacheAgeSec / 60);
+    const ageFrac = cacheTtl > 0 ? cacheAgeSec / cacheTtl : 0;
+
+    let cacheColor = C.green;
+    let cacheWarn = '';
+    if (ageFrac >= 1.0) {
+      cacheColor = C.red;
+      cacheWarn = ` ${C.red}COLD${C.reset}`;
+    } else if (ageFrac >= 0.85) {
+      cacheColor = C.red;
+      cacheWarn = ` ${C.yellow}expiring${C.reset}`;
+    } else if (ageFrac >= 0.67) {
+      cacheColor = C.yellow;
+    }
+
+    // Cache hit rate color: >=80% green (good discount), 40-79% yellow (partial),
+    // <40% flashing red/yellow (you're paying near full price — same flash as >90% bars).
+    let hitStr;
+    if (cacheHitPct < 40) {
+      const flashColor = (frame % 2 === 0) ? C.red : C.yellow;
+      hitStr = `${flashColor}${cacheHitPct}%${C.reset}`;
+    } else {
+      const hitColor = cacheHitPct >= 80 ? C.green : C.yellow;
+      hitStr = `${hitColor}${cacheHitPct}%${C.reset}`;
+    }
+    line1 += `${sep}${C.white}cache:${C.reset} ${hitStr} ${cacheColor}${ageMin}m/${ttlLabel}${C.reset}${cacheWarn}`;
+  }
+
   // ===== Alert level = more severe of two signals =====
   // Token tiers: absolute position toward the hard wall (the lines the user set,
   // ~700k/740k/775k on 1M). Turns tiers: anti-blowout protection \u2014 if the burn
@@ -822,6 +895,11 @@ async function main() {
     }
     // Build snapshot object now; the write is DEFERRED to after usageData is fetched
     // so rate-limit fields can be included in the same snapshot.
+    const cacheTtlLabel = cacheTtl >= 3600 ? '1h' : '5m';
+    const cacheAgeFrac = cacheTtl > 0 ? cacheAgeSec / cacheTtl : 0;
+    const cacheSummary = turnCount > 0
+      ? `Cache: ${cacheHitPct}% hit rate on last turn, age ${Math.floor(cacheAgeSec/60)}m of ${cacheTtlLabel} TTL${cacheAgeFrac >= 1.0 ? ' — EXPIRED, next turn will re-cache the full context at write cost' : cacheAgeFrac >= 0.85 ? ' — expiring soon, activity will refresh it' : ''}.`
+      : '';
     var ctxSnap = {
       ts: frame,
       session_id: data.session_id || '',
@@ -835,7 +913,11 @@ async function main() {
       turns_left: hasData ? turnsLeft : null,
       rate: hasData ? Math.round(rate) : null,
       status: statusName,
-      summary: `Context ${formatTokens(current)} / ${formatTokens(barLimit)} usable (${pctUsed}% used, ${pctRemain}% free). ${turnStr}. Status: ${statusName}. ${advice}`,
+      cache_hit_pct: cacheHitPct,
+      cache_age_sec: cacheAgeSec,
+      cache_ttl: cacheTtl,
+      cache_expired: cacheAgeFrac >= 1.0,
+      summary: `Context ${formatTokens(current)} / ${formatTokens(barLimit)} usable (${pctUsed}% used, ${pctRemain}% free). ${turnStr}. Status: ${statusName}. ${advice}${cacheSummary ? ' ' + cacheSummary : ''}`,
     };
   }
 
@@ -940,35 +1022,16 @@ async function main() {
     if (col3Reset) line3 += sep + col3Reset;
   }
 
-  // Session NEW-work to the RIGHT of weekly on LINE 2 — new tokens this session
-  // (input + cache_create + output, EXCLUDING cache re-reads) INCLUDING subagents.
-  // This is your real work / usage-limit-relevant number and matches the CLI's
-  // per-agent figures. Its own field, so it never disturbs the 5hr/weekly columns
-  // or their line-3 reset alignment.
-  // "session:" (line 2) and "compute:" (line 3) pad their value to a SHARED width = the
-  // longer of the two THIS render, so their trailing separators stay aligned while the
-  // longer value hugs its separator (1 space) — same tightness as the rate-limit columns.
+  // LINE 3: session (new work) | compute (full throughput) | lifetime (high score)
+  // All three token counters grouped on line 3. "session" = new work only (input +
+  // cache_create + output, excludes cache re-reads) — what counts against rate limits.
+  // "compute" = full throughput incl. cache re-reads. "lifetime" = all-sessions total.
+  // session/compute pad to a shared width so their separators align.
   const VAL_W = Math.max(formatTokens(sessionNew).length, formatTokens(sessionCompute).length);
   if (sessionNew > 0) {
     const sessStr = `${C.white}session:${C.reset} ${C.cyan}${formatTokens(sessionNew).padEnd(VAL_W)}${C.reset}`;
-    line2 = line2 ? line2 + sep + sessStr : sessStr;
+    line3 = (line3 ? line3 + sep : '') + sessStr;
   }
-  // Agent tabs — two labeled fields: "agents:" carries the new-work token total,
-  // "spawned:" carries the count. Orange is reserved for the two token numbers that
-  // matter most visually — the context figure (biggest/critical) and the lifetime vanity
-  // score — so the agents token is CYAN, matching every other secondary count on lines
-  // 2-3 (session/compute/spawned/rate/turn). Always shown (renders "agents: 0 | spawned:
-  // 0" when none ran) so the field is never ambiguously absent.
-  {
-    const agtStr = `${C.white}agents:${C.reset} ${C.cyan}${formatTokens(sessionAgents.agentsNew)}${C.reset}`
-      + `${sep}${C.white}spawned:${C.reset} ${C.cyan}${sessionAgents.agentCount}${C.reset}`;
-    line2 = line2 ? line2 + sep + agtStr : agtStr;
-  }
-
-  // LINE 3: per-session "compute" (full throughput incl. cache re-reads) then the
-  // lifetime high score — grouped because both are the cache-fed throughput numbers
-  // (the cache re-reads that inflate compute are the same ones summed into lifetime),
-  // kept off line 2 so the "session" figure stays clean new-work tied to usage limits.
   if (sessionCompute > 0) {
     line3 = (line3 ? line3 + sep : '') + `${C.white}compute:${C.reset} ${C.cyan}${formatTokens(sessionCompute).padEnd(VAL_W)}${C.reset}`;
   }

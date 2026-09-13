@@ -78,6 +78,13 @@ if (s.turns_left != null) {
 }
 console.log(`  Status:   ${s.status}`);
 console.log(`  ${s.summary}`);
+if (s.cache_hit_pct != null) {
+  const ttlLabel = (s.cache_ttl || 3600) >= 3600 ? '1h' : '5m';
+  const ageMin = Math.floor((s.cache_age_sec || 0) / 60);
+  const expired = s.cache_expired;
+  console.log(`  Cache:    ${s.cache_hit_pct}% hit rate (last turn), age ${ageMin}m of ${ttlLabel} TTL${expired ? ' — EXPIRED (next turn re-caches full context at write cost)' : ''}`);
+  if (expired) console.log('  *** CACHE COLD: resuming now will re-cache the entire context. Cost is ~1.25-2x the context size in tokens. ***');
+}
 if (s.five_hour_pct != null) {
   const rl5 = s.five_hour_pct;
   const rl7 = s.seven_day_pct || 0;

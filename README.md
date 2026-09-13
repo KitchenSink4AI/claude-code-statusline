@@ -8,19 +8,19 @@ Built over months of daily use pushing sessions to 900k+ tokens, iterating on ev
 
 ## What it shows
 
-**Line 1, Context + burn rate:**
+**Line 1, Context + burn rate + cache health:**
 ```
-Opus 4.8 (high) | context: ●●●●●●○○○○ 450k/1m 45% | turn: 12 | last: +35k | rate: 28k ~18 turns left | my-project  main
-```
-
-**Line 2, Rate limits + session:**
-```
-5hr: ●●●●●●●○○○ 72% | weekly: ●●●○○○○○○○ 31% | session: 4.2m | agents: 156k | spawned: 8
+Opus 4.6 (max) | context: ●●●●●●○○○○ 450k/1m 45% | turn: 12 | cache: 95% 4m/1h | last: +35k | rate: 28k ~18 turns left | my-project  main
 ```
 
-**Line 3, Resets + throughput:**
+**Line 2, Rate limits:**
 ```
-resets 3:30pm | resets aug 29, 11:00am | compute: 18.7m | lifetime: 4,329,604,816
+5hr: ●●●●●●●○○○ 72% | weekly: ●●●○○○○○○○ 31%
+```
+
+**Line 3, Resets + session tokens + throughput:**
+```
+resets 3:30pm | resets aug 29, 11:00am | session: 4.2m | compute: 18.7m | lifetime: 4,329,604,816
 ```
 
 ### Key features
@@ -29,8 +29,9 @@ resets 3:30pm | resets aug 29, 11:00am | compute: 18.7m | lifetime: 4,329,604,81
 - **Turns remaining:** counts down to a conservative wall (~970k on a 1M window), not the raw window size. The wall is a moving estimate calibrated against real auto-compaction data (observed at ~1,006k tokens).
 - **Three-tier alerts:** CAUTION / WARNING / CRITICAL driven by both token position AND burn rate. Near the wall with a heavy rate? CRITICAL fires even below the token threshold. Light chat at 80%? No alarm.
 - **Animated CRITICAL:** red-orange-yellow color wave scrolling left-to-right, with reverse video for visibility. Paired with `refreshInterval: 1` for ~1fps even when idle.
-- **Flashing bars:** filled dots flash red/yellow above 90% on all bars (context + rate limits).
-- **Rate limit tracking:** 5-hour and 7-day utilization bars from the Anthropic OAuth usage API, cached 2.5 minutes.
+- **Prompt cache health:** hit rate on the last turn (what % of input came from cache), cache age vs detected TTL (1h or 5m), and staleness warnings. Flashes red/yellow when the hit rate drops below 40% (you're paying near full price). Shows `COLD` when the cache has expired and your next turn will re-cache the entire context at write cost.
+- **Flashing bars:** filled dots flash red/yellow above 90% on all bars (context + rate limits), and cache hit rate flashes below 40%.
+- **Rate limit tracking:** 5-hour and 7-day utilization bars from the Anthropic OAuth usage API, cached 60 seconds.
 - **Session burn tracker:** total new-work tokens (excluding cache re-reads) for this session, including all subagents. Scoped to your window; other windows can't leak in.
 - **Lifetime counter:** cumulative tokens processed across all sessions, incrementally cached. The video-game high score.
 - **Model self-check:** writes a tiny JSON snapshot per session so the model can run `node ~/.claude/context-status.js` and get its own real context budget instead of guessing.
