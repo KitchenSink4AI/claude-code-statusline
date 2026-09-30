@@ -1084,7 +1084,8 @@ async function main() {
       const remainMin = Math.ceil(remainSec / 60);
       // The countdown carries the whole signal (hit % dropped from the display; it is
       // still in the context snapshot): green while healthy, yellow past 2/3 of the
-      // TTL, red past 85%, flashing red/yellow in the last 10 minutes.
+      // TTL, red past 85%, flashing red/yellow in the last 10 minutes. Only the minutes
+      // change color; the word "left" stays cyan.
       let cacheColor = C.green;
       if (remainSec <= 600) {
         cacheColor = (frame % 2 === 0) ? C.red : C.yellow;
@@ -1093,7 +1094,7 @@ async function main() {
       } else if (ageFrac >= 0.67) {
         cacheColor = C.yellow;
       }
-      cacheStr = `${C.white}cache:${C.reset} ${cacheColor}${remainMin}m left${C.reset}`;
+      cacheStr = `${C.white}cache:${C.reset} ${cacheColor}${remainMin}m${C.reset} ${C.cyan}left${C.reset}`;
       if (ttlStr) cacheStr += ` ${ttlStr}`;
     }
     line2 = line2 ? line2 + sep + cacheStr : cacheStr;
