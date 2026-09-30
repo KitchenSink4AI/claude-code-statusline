@@ -539,6 +539,18 @@ function computeLifetimeTokens() {
     const jitter = process.pid % 30;
     if (trackingValid && (now - tracking.ts) < LIFETIME_TTL + jitter) return lifetime;
 
+    // Sweep orphaned temp files. A status line run killed between writing its .tmp and
+    // renaming it (a newer refresh can cancel a slow one) leaves the .tmp behind; this
+    // scan runs every ~2 min, so it clears anything older than 5 minutes.
+    try {
+      const claudeDir = path.join(os.homedir(), '.claude');
+      for (const f of fs.readdirSync(claudeDir)) {
+        if (!f.startsWith('statusline-') || !f.endsWith('.tmp')) continue;
+        const fp = path.join(claudeDir, f);
+        try { if (Date.now() - fs.statSync(fp).mtimeMs > 300000) fs.unlinkSync(fp); } catch { /* in use or gone */ }
+      }
+    } catch { /* ignore */ }
+
     const prevFiles = trackingValid ? tracking.files : {};
     const trackingWasRebuilt = !trackingValid;
     const projectsDir = path.join(os.homedir(), '.claude', 'projects');
