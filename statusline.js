@@ -186,6 +186,41 @@ function getOAuthToken() {
   return '';
 }
 
+function getCredentialsMtime() {
+  try {
+    return fs.statSync(path.join(os.homedir(), '.claude', '.credentials.json')).mtimeMs;
+  } catch { return 0; }
+}
+
+function getActiveAccount(credsMtime) {
+  const cacheDir = path.join(os.tmpdir(), 'claude');
+  const acctCache = path.join(cacheDir, 'statusline-account-cache.json');
+  try {
+    const stat = fs.statSync(acctCache);
+    if ((Date.now() - stat.mtimeMs) / 1000 < 120) {
+      const cached = readJsonFile(acctCache);
+      if (cached && cached.credsMtime === credsMtime) return cached.account || null;
+    }
+  } catch { /* no cache */ }
+  try {
+    const raw = execSync('claude-swap status --json', {
+      timeout: 3000, encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore']
+    });
+    const data = JSON.parse(raw);
+    const account = data.active ? {
+      email: data.active.email || '',
+      number: data.active.number || 0,
+      totalAccounts: data.totalManagedAccounts || 0,
+    } : null;
+    try {
+      fs.mkdirSync(cacheDir, { recursive: true });
+      writeJsonFileAtomic(acctCache, { account, credsMtime });
+    } catch { /* ignore */ }
+    return account;
+  } catch { return null; }
+}
+
 function fetchUsage(token) {
   return new Promise((resolve) => {
     const req = https.request('https://api.anthropic.com/api/oauth/usage', {
@@ -438,6 +473,28 @@ function sumTranscriptTokens(filePath) {
   return { total, newTok };
 }
 
+// --- Lifetime spawned-agent counter ---
+// Counts subagents ever launched, across all windows. Rides on the lifetime token
+// scan below: a subagent transcript the tracking file has never seen is a new spawn.
+// Kept in its own tiny sentinel with the same protections as the token lifetime:
+// never recounted from disk (Claude Code prunes old transcripts, which must not lower
+// it), and nothing is added on a cycle where the tracking file had to be rebuilt.
+const SPAWNED_FILE = path.join(os.homedir(), '.claude', 'statusline-spawned-sentinel.json');
+function isAgentTranscript(fp) {
+  return fp.includes(`${path.sep}subagents${path.sep}`);
+}
+function readLifetimeSpawned() {
+  const s = readJsonFile(SPAWNED_FILE);
+  if (s && typeof s.spawned === 'number') return s.spawned;
+  // First run: seed from the agent transcripts the tracking file already lists. This
+  // is a floor, since transcripts older than the cleanup period are already gone.
+  const t = readJsonFile(path.join(os.homedir(), '.claude', 'statusline-lifetime-cache.json'));
+  if (!t || !t.files) return 0; // no scan yet; seeds after the first one
+  const seed = Object.keys(t.files).filter(isAgentTranscript).length;
+  try { writeJsonFileAtomic(SPAWNED_FILE, { spawned: seed }); } catch {}
+  return seed;
+}
+
 // --- Lifetime token counter ---
 // Two separate files, two separate concerns:
 //   LIFETIME file (~30 bytes): the monotonic accumulator, only modified when real growth
@@ -469,6 +526,7 @@ function computeLifetimeTokens() {
     const projectsDir = path.join(os.homedir(), '.claude', 'projects');
     const files = {};
     let growth = 0;
+    let newSpawned = 0;
 
     for (const proj of fs.readdirSync(projectsDir)) {
       const pdir = path.join(projectsDir, proj);
@@ -505,6 +563,7 @@ function computeLifetimeTokens() {
             files[fp] = prev;
             continue;
           }
+          if (!prev && !trackingWasRebuilt) newSpawned++;
           const tokens = sumTranscriptTokens(fp).total;
           if (!trackingWasRebuilt) {
             const delta = tokens - (prev?.tokens || 0);
@@ -517,16 +576,24 @@ function computeLifetimeTokens() {
     // Compare-and-swap: re-read tracking to see if another window already wrote
     // updated baselines during our scan. If so, recompute deltas against the fresh
     // baselines — any growth the other window already counted shows as delta=0.
-    if (growth > 0 && !trackingWasRebuilt) {
+    if ((growth > 0 || newSpawned > 0) && !trackingWasRebuilt) {
       const freshTracking = readJsonFile(trackingFile);
       if (freshTracking && freshTracking.ts > (tracking?.ts || 0)) {
         growth = 0;
+        newSpawned = 0;
         for (const [fp, entry] of Object.entries(files)) {
           const freshPrev = freshTracking.files?.[fp];
           const delta = entry.tokens - (freshPrev?.tokens || entry.tokens);
           if (delta > 0) growth += delta;
+          if (!freshPrev && isAgentTranscript(fp)) newSpawned++;
         }
       }
+    }
+    // New spawns go to the spawned sentinel BEFORE the tracking file is rewritten, so
+    // a first-run seed (read from the old tracking file) never includes them twice.
+    if (newSpawned > 0) {
+      const base = readLifetimeSpawned();
+      try { writeJsonFileAtomic(SPAWNED_FILE, { spawned: base + newSpawned }); } catch {}
     }
     // Write tracking file with a BACKUP copy of lifetime (belt and suspenders)
     try { writeJsonFileAtomic(trackingFile, { files, ts: now, lifetime }); } catch {}
@@ -903,6 +970,7 @@ async function main() {
   const cacheDir = path.join(os.tmpdir(), 'claude');
   const cacheFile = path.join(cacheDir, 'statusline-usage-cache.json');
   const cacheMaxAge = 60;
+  const credsMtime = getCredentialsMtime();
 
   let usageData = null;
   let needsRefresh = true;
@@ -910,8 +978,11 @@ async function main() {
   try {
     const stat = fs.statSync(cacheFile);
     if ((Date.now() - stat.mtimeMs) / 1000 < cacheMaxAge) {
-      needsRefresh = false;
-      usageData = readJsonFile(cacheFile);
+      const cached = readJsonFile(cacheFile);
+      if (cached && cached._credsMtime === credsMtime) {
+        needsRefresh = false;
+        usageData = cached;
+      }
     }
   } catch { /* no cache yet */ }
 
@@ -923,11 +994,14 @@ async function main() {
         usageData = response;
         try {
           fs.mkdirSync(cacheDir, { recursive: true });
-          writeJsonFileAtomic(cacheFile, response);
+          writeJsonFileAtomic(cacheFile, { ...response, _credsMtime: credsMtime });
         } catch { /* continue */ }
       }
     }
-    if (!usageData) usageData = readJsonFile(cacheFile);
+    if (!usageData) {
+      const fallback = readJsonFile(cacheFile);
+      if (fallback && fallback._credsMtime === credsMtime) usageData = fallback;
+    }
   }
 
   if (usageData) {
@@ -989,7 +1063,7 @@ async function main() {
     if (col3Reset) line3 += sep + col3Reset;
   }
 
-  // Cache health on LINE 2: hit rate + age/TTL or COLD.
+  // Cache health on LINE 2: minutes left before the TTL expires, or COLD.
   if (turnCount > 0 && cacheAgeSec >= 0) {
     const ttlLabel = cacheTtl >= 3600 ? '1h' : '5m';
     const ageFrac = cacheTtl > 0 ? cacheAgeSec / cacheTtl : 0;
@@ -1008,7 +1082,10 @@ async function main() {
     } else {
       const remainSec = Math.max(0, cacheTtl - cacheAgeSec);
       const remainMin = Math.ceil(remainSec / 60);
-      let cacheColor = C.cyan;
+      // The countdown carries the whole signal (hit % dropped from the display; it is
+      // still in the context snapshot): green while healthy, yellow past 2/3 of the
+      // TTL, red past 85%, flashing red/yellow in the last 10 minutes.
+      let cacheColor = C.green;
       if (remainSec <= 600) {
         cacheColor = (frame % 2 === 0) ? C.red : C.yellow;
       } else if (ageFrac >= 0.85) {
@@ -1016,18 +1093,29 @@ async function main() {
       } else if (ageFrac >= 0.67) {
         cacheColor = C.yellow;
       }
-      let hitStr;
-      if (cacheHitPct < 40) {
-        const flashColor = (frame % 2 === 0) ? C.red : C.yellow;
-        hitStr = `${flashColor}${cacheHitPct}%${C.reset}`;
-      } else {
-        const hitColor = cacheHitPct >= 80 ? C.green : C.yellow;
-        hitStr = `${hitColor}${cacheHitPct}%${C.reset}`;
-      }
-      cacheStr = `${C.white}cache:${C.reset} ${hitStr} ${cacheColor}${remainMin}m left${C.reset}`;
+      cacheStr = `${C.white}cache:${C.reset} ${cacheColor}${remainMin}m left${C.reset}`;
       if (ttlStr) cacheStr += ` ${ttlStr}`;
     }
     line2 = line2 ? line2 + sep + cacheStr : cacheStr;
+  }
+
+  // Agent counts (numbers of agents only, no agent token figures):
+  //   agents           = subagents spawned in THIS window's session (shown even at 0)
+  //   lifetime spawned = subagents ever spawned, all windows (see readLifetimeSpawned)
+  {
+    const agentsStr = `${C.white}agents:${C.reset} ${C.cyan}${sessionAgents.agentCount}${C.reset}`;
+    const spawnedStr = `${C.white}lifetime spawned:${C.reset} ${C.cyan}${formatLifetime(readLifetimeSpawned())}${C.reset}`;
+    line2 = (line2 ? line2 + sep : '') + agentsStr + sep + spawnedStr;
+  }
+
+  // Account identity from claude-swap (shown when installed and managing accounts)
+  const accountInfo = getActiveAccount(credsMtime);
+  if (accountInfo && accountInfo.email) {
+    const acctSlot = accountInfo.totalAccounts > 1
+      ? ` ${C.grey}[${accountInfo.number}/${accountInfo.totalAccounts}]${C.reset}`
+      : '';
+    const acctStr = `${C.white}acct:${C.reset} ${C.blue}${accountInfo.email}${C.reset}${acctSlot}`;
+    line2 = line2 ? line2 + sep + acctStr : acctStr;
   }
 
   // LINE 3: session (new work) | compute (full throughput) | lifetime (high score)
@@ -1064,6 +1152,11 @@ async function main() {
     ctxSnap.seven_day_resets_at = usageData.seven_day?.resets_at || null;
     const rl5 = ctxSnap.five_hour_pct;
     ctxSnap.rate_limit_status = rl5 >= 97 ? 'CRITICAL' : rl5 >= 95 ? 'WARNING' : rl5 >= 90 ? 'CAUTION' : 'OK';
+  }
+  if (accountInfo && accountInfo.email) {
+    ctxSnap.account_email = accountInfo.email;
+    ctxSnap.account_number = accountInfo.number;
+    ctxSnap.account_total = accountInfo.totalAccounts;
   }
   writeContextSnapshot(ctxSnap);
 

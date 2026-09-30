@@ -8,14 +8,14 @@ Built over months of daily use pushing sessions to 900k+ tokens, iterating on ev
 
 ## What it shows
 
-**Line 1, Context + burn rate + cache health:**
+**Line 1, Context + burn rate:**
 ```
-Opus 4.6 (max) | context: ●●●●●●○○○○ 450k/1m 45% | turn: 12 | cache: 95% 4m/1h | last: +35k | rate: 28k ~18 turns left | my-project  main
+Opus 4.6 (max) | context: ●●●●●●○○○○ 450k/1m 45% | turn: 12 | last: +35k | rate: 28k ~18 turns left | my-project  main
 ```
 
-**Line 2, Rate limits:**
+**Line 2, Rate limits + cache health + agents:**
 ```
-5hr: ●●●●●●●○○○ 72% | weekly: ●●●○○○○○○○ 31%
+5hr: ●●●●●●●○○○ 72% | weekly: ●●●○○○○○○○ 31% | cache: 54m left | agents: 3 | lifetime spawned: 1,212
 ```
 
 **Line 3, Resets + session tokens + throughput:**
@@ -29,11 +29,12 @@ resets 3:30pm | resets aug 29, 11:00am | session: 4.2m | compute: 18.7m | lifeti
 - **Turns remaining:** counts down to a conservative wall (~970k on a 1M window), not the raw window size. The wall is a moving estimate calibrated against real auto-compaction data (observed at ~1,006k tokens).
 - **Three-tier alerts:** CAUTION / WARNING / CRITICAL driven by both token position AND burn rate. Near the wall with a heavy rate? CRITICAL fires even below the token threshold. Light chat at 80%? No alarm.
 - **Animated CRITICAL:** red-orange-yellow color wave scrolling left-to-right, with reverse video for visibility. Paired with `refreshInterval: 1` for ~1fps even when idle.
-- **Prompt cache health:** hit rate on the last turn (what % of input came from cache), cache age vs detected TTL (1h or 5m), and staleness warnings. Flashes red/yellow when the hit rate drops below 40% (you're paying near full price). Shows `COLD` when the cache has expired and your next turn will re-cache the entire context at write cost.
-- **Flashing bars:** filled dots flash red/yellow above 90% on all bars (context + rate limits), and cache hit rate flashes below 40%.
+- **Prompt cache countdown:** minutes left before the prompt cache expires, measured against the detected TTL (1h or 5m). Green while healthy, yellow past two thirds of the TTL, and flashing red/yellow in the last 10 minutes. Shows `COLD` when the cache has expired and your next turn will re-cache the entire context at write cost, and flashes `5m TTL` if you've dropped to the short cache tier.
+- **Flashing bars:** filled dots flash red/yellow above 90% on all bars (context + rate limits), and the cache countdown flashes in its last 10 minutes.
 - **Rate limit tracking:** 5-hour and 7-day utilization bars from the Anthropic OAuth usage API, cached 60 seconds.
 - **Session burn tracker:** total new-work tokens (excluding cache re-reads) for this session, including all subagents. Scoped to your window; other windows can't leak in.
 - **Lifetime counter:** cumulative tokens processed across all sessions, incrementally cached. The video-game high score.
+- **Agent counters:** `agents` is the number of subagents spawned in this session, and `lifetime spawned` is the running total across every session and window. The first run seeds the lifetime total from the subagent transcripts still on disk, so it starts as a floor (Claude Code deletes transcripts after its cleanup period). After that it only counts up, and pruned transcripts never lower it.
 - **Model self-check:** writes a tiny JSON snapshot per session so the model can run `node ~/.claude/context-status.js` and get its own real context budget instead of guessing.
 - **Token diagnostic logger:** opt-in per-turn JSONL logger for calibrating the envelope follower across sessions.
 
