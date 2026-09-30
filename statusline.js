@@ -161,9 +161,16 @@ function writeJsonFileAtomic(filePath, data) {
   // Write to a per-PID temp file then rename. Rename is atomic on NTFS, so an
   // interrupted write corrupts only the temp file while the original stays intact.
   // Per-PID temp path prevents 6+ concurrent windows from colliding on the same .tmp.
+  // If the rename fails (another window holds the target open), remove the temp file
+  // before rethrowing so orphaned .tmp files don't pile up in ~/.claude.
   const tmp = filePath + '.' + process.pid + '.tmp';
   fs.writeFileSync(tmp, JSON.stringify(data));
-  fs.renameSync(tmp, filePath);
+  try {
+    fs.renameSync(tmp, filePath);
+  } catch (e) {
+    try { fs.unlinkSync(tmp); } catch { /* ignore */ }
+    throw e;
+  }
 }
 
 function getClaudeVersion() {
