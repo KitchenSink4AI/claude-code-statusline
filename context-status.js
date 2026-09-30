@@ -85,6 +85,10 @@ if (s.cache_hit_pct != null) {
   console.log(`  Cache:    ${s.cache_hit_pct}% hit rate (last turn), age ${ageMin}m of ${ttlLabel} TTL${expired ? ' — EXPIRED (next turn re-caches full context at write cost)' : ''}`);
   if (expired) console.log('  *** CACHE COLD: resuming now will re-cache the entire context. Cost is ~1.25-2x the context size in tokens. ***');
 }
+if (s.account_email) {
+  const acctSlot = s.account_total > 1 ? ` [${s.account_number}/${s.account_total}]` : '';
+  console.log(`  Account: ${s.account_email}${acctSlot}`);
+}
 if (s.five_hour_pct != null) {
   const rl5 = s.five_hour_pct;
   const rl7 = s.seven_day_pct || 0;
@@ -94,6 +98,33 @@ if (s.five_hour_pct != null) {
   if (rl5 >= 97) console.log('  *** 5HR CRITICAL: save state NOW and pause. Schedule resume for 5 min after reset. ***');
   else if (rl5 >= 95) console.log('  ** 5HR WARNING: stop launching agents. Finish current work only. **');
   else if (rl5 >= 90) console.log('  * 5HR CAUTION: rate limit approaching. Be deliberate about new agent batches. *');
+
+  // Auto-swap: when rate limit is high and claude-swap manages multiple accounts,
+  // check if another account has headroom and offer to swap.
+  if (rl5 >= 90 && s.account_total > 1) {
+    const { execSync } = require('child_process');
+    try {
+      const raw = execSync('claude-swap list --json', {
+        timeout: 5000, encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore']
+      });
+      const list = JSON.parse(raw);
+      const MAX_DATA_AGE = 300;
+      const others = (list.accounts || []).filter(a =>
+        !a.active && a.usageStatus === 'ok' && a.usage?.fiveHour?.pct < 80
+        && (a.usageAgeSeconds ?? Infinity) < MAX_DATA_AGE
+      );
+      if (others.length > 0) {
+        const best = others.reduce((a, b) => (a.usage.fiveHour.pct < b.usage.fiveHour.pct ? a : b));
+        const dataAge = Math.round(best.usageAgeSeconds ?? 0);
+        console.log(`\n  AUTO-SWAP AVAILABLE: account ${best.number} (${best.email}) has 5hr at ${best.usage.fiveHour.pct}% (data ${dataAge}s old).`);
+        console.log(`  To swap: run \`claude-swap switch ${best.number}\` or \`claude-swap switch --strategy best\``);
+        if (rl5 >= 95) {
+          console.log('  ** Recommended: swap now to avoid hitting the rate limit. **');
+        }
+      }
+    } catch { /* claude-swap not available or errored */ }
+  }
 }
 if (age > 30) {
   console.log(`  (Note: snapshot is ${age}s old; if the bar isn't refreshing, the number may lag — but it is still far better than guessing.)`);

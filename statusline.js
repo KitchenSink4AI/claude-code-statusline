@@ -225,7 +225,18 @@ function getActiveAccount(credsMtime) {
       writeJsonFileAtomic(acctCache, { account, credsMtime });
     } catch { /* ignore */ }
     return account;
-  } catch { return null; }
+  } catch {
+    // claude-swap missing, errored, or slower than the timeout (it can take ~5s). Keep the
+    // last known account if the login hasn't changed, else null, and cache that result so
+    // the status line doesn't spawn claude-swap on every 1-second refresh. Retried in 120s.
+    const prev = readJsonFile(acctCache);
+    const account = (prev && prev.credsMtime === credsMtime) ? (prev.account || null) : null;
+    try {
+      fs.mkdirSync(cacheDir, { recursive: true });
+      writeJsonFileAtomic(acctCache, { account, credsMtime });
+    } catch { /* ignore */ }
+    return account;
+  }
 }
 
 function fetchUsage(token) {

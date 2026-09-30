@@ -225,6 +225,10 @@ if (snap && snap.five_hour_pct != null) {
   const stopAgentPct = isFable ? 92 : 95;
 
   console.log(`\n=== RATE LIMITS ===`);
+  if (snap.account_email) {
+    const acctSlot = snap.account_total > 1 ? ` [${snap.account_number}/${snap.account_total}]` : '';
+    console.log(`acct:    ${snap.account_email}${acctSlot}`);
+  }
   console.log(`5hr:     ${rl5.toFixed(1)}%  ${rlStatus}  (resets ${resetStr})`);
   console.log(`weekly:  ${rl7.toFixed(1)}%`);
 
@@ -243,5 +247,44 @@ if (snap && snap.five_hour_pct != null) {
 
   if (rl7 >= 90) {
     console.log(`\n* WEEKLY CAUTION (${rl7.toFixed(1)}%) — weekly limit approaching. Pace your work. *`);
+  }
+
+  // Auto-swap: when rate limit is high and claude-swap manages multiple accounts,
+  // check if another account has headroom and offer/execute a swap.
+  if (rl5 >= 90 && snap.account_total > 1) {
+    const { execSync } = require('child_process');
+    try {
+      const raw = execSync('claude-swap list --json', {
+        timeout: 5000, encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore']
+      });
+      const list = JSON.parse(raw);
+      const MAX_DATA_AGE = 300; // reject usage data older than 5 minutes
+      const others = (list.accounts || []).filter(a =>
+        !a.active && a.usageStatus === 'ok' && a.usage?.fiveHour?.pct < 80
+        && (a.usageAgeSeconds ?? Infinity) < MAX_DATA_AGE
+      );
+      const stale = (list.accounts || []).filter(a =>
+        !a.active && a.usageStatus === 'ok' && (a.usageAgeSeconds ?? Infinity) >= MAX_DATA_AGE
+      );
+      if (others.length > 0) {
+        const best = others.reduce((a, b) => (a.usage.fiveHour.pct < b.usage.fiveHour.pct ? a : b));
+        const dataAge = Math.round(best.usageAgeSeconds ?? 0);
+        console.log(`\n=== AUTO-SWAP AVAILABLE ===`);
+        console.log(`Account ${best.number} (${best.email}) has 5hr at ${best.usage.fiveHour.pct}% (data ${dataAge}s old).`);
+        console.log(`Run: claude-swap switch ${best.number}`);
+        if (rl5 >= 95) {
+          console.log('** Recommended: swap NOW to avoid hitting the rate limit. **');
+          console.log('The session will use the new account on the next API call.');
+        }
+      } else {
+        if (stale.length > 0) {
+          console.log(`\nNo swap candidates — ${stale.length} account(s) have stale usage data (>${MAX_DATA_AGE}s old).`);
+          console.log('Run: claude-swap list  (to refresh usage data)');
+        } else {
+          console.log('\nNo other accounts with headroom available for auto-swap.');
+        }
+      }
+    } catch { /* claude-swap not available */ }
   }
 }

@@ -39,6 +39,10 @@ The tool also reports the 5-hour and weekly rate-limit utilization from the live
 - Multiple windows share the same 5-hour pool. This tool shows YOUR window's view of a SHARED resource. Other active windows are also consuming from it.
 - Each subagent consumes from the same rate-limit pool independently. A batch of 10 agents is not 1 unit of rate-limit cost â€” it is 10.
 
-**Constantly check this tool during autonomous and multi-agent runs.** Do not wait for a problem to surface. Check before each agent batch, after each heavy task, and periodically during long runs. Follow the warnings â€” they exist because sessions have collapsed mid-run from hitting rate limits without warning.
+**Constantly check this tool during autonomous and multi-agent runs.** Do not wait for a problem to surface. Check before each agent batch, after each heavy task, and periodically during long runs. Follow the warnings; they exist because sessions have collapsed mid-run from hitting rate limits without warning.
 
-Read-only and near-zero cost â€” fine to run whenever context feels uncertain in a long session.
+Read-only and near-zero cost, fine to run whenever context feels uncertain in a long session.
+
+## Multiple accounts (optional)
+
+If you use `claude-swap` to manage more than one Claude account, this tool also shows which account is active, and at 90%+ 5hr usage it suggests switching to an account with headroom. Without claude-swap, that part of the output simply doesn't appear.
